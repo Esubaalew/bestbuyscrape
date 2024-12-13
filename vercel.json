@@ -17,10 +17,4 @@
       "dest": "main.py"
     }
   ],
-  "functions": {
-    "main": {
-      "memory": 1024,
-      "maxDuration": 10
-    }
-  }
 }
