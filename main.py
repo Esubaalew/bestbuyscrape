@@ -1,124 +1,140 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.docs import (
-    get_redoc_html, get_swagger_ui_html,
-)
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.responses import RedirectResponse
-
-from dictionary.britannica import (
-    get_entries,
-    get_total_entries,
-    get_word_of_the_day,
-    get_parts,
-    get_definitions
-)
+from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
 
 app = FastAPI(
-    title="Azeb's Dictionary API",
-    description="API for accessing Britannica Dictionary data.",
-    summary="Azeb's API: Explore the depths of the English language with comprehensive definitions, word of the "
-            "day, and more.",
+    title="Best Buy Scraper API",
+    description="API for extracting product and category data from Best Buy's website. "
+                "Explore product details, categories, and more with ease.",
+    summary="Best Buy Scraper: Your gateway to live product data from Best Buy.",
     contact={
         "name": "Esubalew Chekol",
         "url": "https://github.com/esubaalew",
-
+        "email": "esubaalew@example.com",
     },
-
-    version="1.0"
+    version="1.0",
 )
 
-# Allow requests from all origins
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
+BASE_URL = "https://www.bestbuy.com"
 
-@app.get("/entries/{word}")
-async def entries(word: str):
+
+async def fetch_page_source(url: str) -> str:
+    """Fetch the page source using Playwright in headless mode."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(url)
+        if "Choose a country" in await page.content():
+            await page.click('a.us-link')
+            await page.wait_for_load_state('networkidle')
+        content = await page.content()
+        await browser.close()
+        return content
+
+
+@app.get("/categories", summary="Fetch all categories", tags=["Categories"])
+async def fetch_categories():
     """
-    Retrieve entries for a given word from the Britannica Dictionary.
+    Retrieve all available product categories from Best Buy's homepage.
+
+    Returns:
+        dict: A dictionary containing the names and URLs of all categories.
+    """
+    try:
+        page_source = await fetch_page_source(BASE_URL)
+        soup = BeautifulSoup(page_source, "html.parser")
+        categories = []
+        for item in soup.select('li.c-carousel-item'):
+            category = item.find('a')
+            if category:
+                name = category.get_text(strip=True)
+                url = category['href']
+                categories.append({'name': name, 'url': BASE_URL + url})
+        return {"categories": categories}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/category-products", summary="Fetch products by category name", tags=["Products"])
+async def fetch_category_products(
+    category_name: str = Query(..., description="The name of the category to fetch products from.")
+):
+    """
+    Retrieve product details for a specific category by its name.
 
     Args:
-        word (str): The word to retrieve entries for.
+        category_name (str): The name of the category to retrieve products for.
 
     Returns:
-        dict: A dictionary containing entries for the given word.
+        dict: A dictionary containing product details (name, image, price).
     """
-    entries = get_entries(word)
-    return {"entries": entries}
+    try:
+        # Fetch all categories to find the matching category
+        page_source = await fetch_page_source(BASE_URL)
+        soup = BeautifulSoup(page_source, "html.parser")
+        categories = []
+        for item in soup.select('li.c-carousel-item'):
+            category = item.find('a')
+            if category:
+                name = category.get_text(strip=True)
+                url = category['href']
+                categories.append({'name': name, 'url': BASE_URL + url})
 
+        # Find the category URL matching the provided name
+        category = next((cat for cat in categories if cat['name'].lower() == category_name.lower()), None)
+        if not category:
+            raise HTTPException(status_code=404, detail=f"Category '{category_name}' not found.")
 
-@app.get("/total_entries/{word}")
-async def total_entries(word: str):
-    """
-    Retrieve the total number of entries for a given word from the Britannica Dictionary.
-
-    Args:
-        word (str): The word to retrieve total entries for.
-
-    Returns:
-        dict: A dictionary containing the total number of entries for the given word.
-    """
-    total_entries = get_total_entries(word)
-    return {"total_entries": total_entries}
-
-
-@app.get("/word_of_the_day")
-async def word_of_the_day():
-    """
-    Retrieve the word of the day from the Britannica Dictionary.
-
-    Returns:
-        dict: A dictionary containing the word of the day.
-    """
-    word_of_the_day = get_word_of_the_day()
-    return {"word_of_the_day": word_of_the_day}
-
-
-@app.get("/speeches/{word}")
-async def parts(word: str):
-    """
-    Retrieve the parts of speech for a given word from the Britannica Dictionary.
-
-    Args:
-        word (str): The word to retrieve parts of speech for.
-
-    Returns:
-        dict: A dictionary containing the parts of speech for the given word.
-    """
-    parts = get_parts(word)
-    return {"parts_of_speech": parts}
-
-
-@app.get("/definitions/{word}")
-async def  definitions(word: str):
-    """
-    Retrieve the definitions and examples for a given word from the Britannica Dictionary.
-
-    Args:
-        word (str): The word to retrieve definitions and examples for.
-
-    Returns:
-        dict: A dictionary containing the definitions and examples for the given word.
-    """
-    definitions = get_definitions(word)
-    return {"definitions": definitions}
+        # Fetch products from the matched category
+        page_source = await fetch_page_source(category['url'])
+        soup = BeautifulSoup(page_source, "html.parser")
+        products = []
+        for item in soup.select('li.sku-item'):
+            name_tag = item.select_one('h4.sku-title a')
+            image_tag = item.select_one('img.product-image')
+            price_tag = item.select_one('div.priceView-hero-price span')
+            if name_tag and image_tag and price_tag:
+                products.append({
+                    'name': name_tag.text.strip(),
+                    'photo': image_tag['src'],
+                    'price': price_tag.text.strip()
+                })
+        return {"products": products}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/", include_in_schema=False)
 async def root():
-    return RedirectResponse(url='/redoc')
+    """
+    Redirect to API documentation.
+    """
+    return RedirectResponse(url="/docs")
 
 
-@app.get("/redoc", include_in_schema=False)
+@app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html():
-    return get_swagger_ui_html(openapi_url="/openapi.json", title="Azeb's Dictionary API    ")
+    """
+    Redirect to Swagger UI.
+    """
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="Best Buy Scraper API")
 
 
 @app.get("/redoc", include_in_schema=False)
 async def redoc_html():
-    return get_redoc_html(openapi_url="/openapi.json", title="Azeb's Dictionary API")
+    """
+    Redirect to Redoc UI.
+    """
+    return get_redoc_html(openapi_url="/openapi.json", title="Best Buy Scraper API")
